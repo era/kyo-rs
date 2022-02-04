@@ -22,66 +22,47 @@ fn not_found_error() -> tide::Error {
     )
 }
 
-fn db_lock_error() -> tide::Error {
-    tide::Error::new(
-        tide::StatusCode::InternalServerError,
-        anyhow::anyhow!("Could not get lock on database"),
-    )
-}
-
 async fn post_resource(mut req: Request<()>) -> Result<String, tide::Error> {
     let resource = req.param("resource")?.to_owned();
     let json: String = req.body_string().await?;
     let json: serde_json::Value = serde_json::from_str(&json)?;
-
-    let id = match get_db(&resource).write() {
-        Ok(mut writer) => {
-            let id = writer.len();
-            if let serde_json::Value::Object(mut obj) = json {
-                obj.insert("id".to_owned(), json!(id));
-                writer.push(Some(serde_json::Value::Object(obj)))
-            }
-            id
-        }
-        Err(_) => return Err(db_lock_error()),
-    };
+    let mut writer = get_db(&resource).write().unwrap();
+    let id = writer.len();
+    if let serde_json::Value::Object(mut obj) = json {
+        obj.insert("id".to_owned(), json!(id));
+        writer.push(Some(serde_json::Value::Object(obj)))
+    }
 
     Ok(format!("{{id: {} }}", id))
 }
 
 async fn get_resource(req: Request<()>) -> Result<String, tide::Error> {
     let resource = req.param("resource")?.to_owned();
-    let results = match get_db(&resource).read() {
-        Ok(reader) => {
-            let mut results: Vec<serde_json::Value> = vec![];
-            for item in reader.iter() {
-                if let Some(json) = item {
-                    results.push(json.clone());
-                }
-            }
-            results
+    let reader = get_db(&resource).read().unwrap();
+    let mut results: Vec<serde_json::Value> = vec![];
+    for item in reader.iter() {
+        if let Some(json) = item {
+            results.push(json.clone());
         }
+    }
 
-        Err(_) => return Err(db_lock_error()),
-    };
     Ok(serde_json::to_string(&results)?.to_string())
 }
 
 async fn get_resource_item(req: Request<()>) -> Result<String, tide::Error> {
     let resource = req.param("resource")?.to_owned();
     let key = req.param("id")?;
-    let result: Option<serde_json::Value> = match get_db(&resource).read() {
-        Ok(reader) => {
-            let id = key.parse::<usize>().unwrap();
-            if reader.len() < id {
-                return Err(not_found_error());
-            }
-            reader[id].clone()
-        }
-        Err(_) => return Err(db_lock_error()),
-    };
-    match result {
-        Some(result) => Ok(serde_json::to_string(&result)?.to_string()),
+
+    let id = key.parse::<usize>().unwrap();
+
+    let reader = get_db(&resource).read().unwrap();
+
+    if reader.len() < id {
+        return Err(not_found_error());
+    }
+
+    match &reader[id] {
+        Some(result) => Ok(serde_json::to_string(result)?.to_string()),
         None => Err(not_found_error()),
     }
 }
